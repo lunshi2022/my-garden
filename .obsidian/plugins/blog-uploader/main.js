@@ -178,9 +178,13 @@ class BlogUploaderPlugin extends Plugin {
     }
 
     // 1. 笔记本体（同名旧版会被覆盖，即“重新上传就是更新”）
+    // 注意：Obsidian 的 TFile.path 已经是“相对笔记库根目录”的路径（如 content/foo.md），
+    // 不要再用 path.relative(vaultRoot, file.path)——那会把 file.path 当成相对“进程当前目录”
+    // 解析（Obsidian 的 CWD 是安装目录），跨盘符时直接吐出绝对路径，导致目标被拼坏。
     const contentName = this.settings.contentDir || 'content';
+    const noteRel = stripContentPrefix(file.path, contentName);
     const noteTarget = this.settings.keepStructure
-      ? path.join(contentDir, stripContentPrefix(path.relative(vaultRoot, file.path), contentName))
+      ? path.join(contentDir, noteRel)
       : path.join(contentDir, file.basename + '.' + file.extension);
 
     if (!this.copyTo(abs, noteTarget)) return;
@@ -208,7 +212,7 @@ class BlogUploaderPlugin extends Plugin {
 
       const srcAbs = path.join(vaultRoot, dest.path);
       const target = this.settings.keepStructure
-        ? path.join(contentDir, stripContentPrefix(path.relative(vaultRoot, dest.path), contentName))
+        ? path.join(contentDir, stripContentPrefix(dest.path, contentName))
         : path.join(contentDir, 'attachments', dest.name);
 
       if (this.copyTo(srcAbs, target)) attachmentCount += 1;

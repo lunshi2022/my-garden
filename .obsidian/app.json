@@ -1,4 +1,7 @@
 {
+  "cssSnippets": [
+    "hide-system"
+  ],
   "communityPluginsEnabled": true,
   "safeMode": false
 }
