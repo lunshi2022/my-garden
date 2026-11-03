@@ -408,14 +408,25 @@ class BlogUploaderPlugin extends Plugin {
         return;
       }
 
-      const push = git(['push']);
+      // 确定当前分支与远程：部署器直推 URL 时未建立上游跟踪，
+      // 这里显式带 -u 推一次，之后 plain `git push` 也能用。
+      const branch = String(git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim() || 'main';
+      const remotes = String(git(['remote']).stdout || '')
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+      const remote = remotes.includes('origin') ? 'origin' : (remotes[0] || '');
+      if (!remote) {
+        new Notice('未检测到 git 远程仓库（origin），无法推送。请在该目录执行：git remote add origin <你的仓库地址>', 8000);
+        return;
+      }
+
+      const push = git(['push', '-u', remote, branch]);
       if (push.status !== 0) {
         const msg = String(push.stderr || push.stdout || '').trim().split('\n').pop();
         new Notice('推送失败：' + (msg || '未知错误'), 8000);
         console.error('[blog-uploader] push failed\n' + (push.stderr || push.stdout));
         return;
       }
-      new Notice('已推送，GitHub Pages 一分钟左右后会自动更新', 5000);
+      new Notice('已推送，GitHub Actions 正在构建，几分钟后站点会自动更新', 5000);
     } catch (e) {
       new Notice('推送出错：' + (e.message || e), 6000);
       console.error('[blog-uploader] push error', e);
