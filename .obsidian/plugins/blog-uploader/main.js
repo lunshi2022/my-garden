@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS = {
   autoBuild: true,
   autoPush: true,
   previewPort: 4321,
+  gitToken: '',
 };
 
 /** 用系统浏览器打开网址（Obsidian 桌面版优先走 electron.shell） */
@@ -419,7 +420,21 @@ class BlogUploaderPlugin extends Plugin {
         return;
       }
 
-      const push = git(['push', '-u', remote, branch]);
+      // 若设置了访问令牌，把它嵌进远程 URL 直接推送，彻底绕开 Git Credential Manager
+      // 的交互弹窗（否则 GCM 会卡在「选择账户」页面）。
+      let pushArgs = ['push', '-u', remote, branch];
+      const token = String(this.settings.gitToken || '').trim();
+      if (token) {
+        const urlOut = git(['remote', 'get-url', remote]);
+        const url = String(urlOut.stdout || '').trim();
+        // 仅对 https 远程注入令牌；ssh 形式（git@github.com:...）保持原样走密钥/弹窗
+        if (/^https:\/\//i.test(url)) {
+          const authed = url.replace(/^https:\/\//i, 'https://x-access-token:' + token + '@');
+          pushArgs = ['push', '-u', authed, branch];
+        }
+      }
+
+      const push = git(pushArgs);
       if (push.status !== 0) {
         const msg = String(push.stderr || push.stdout || '').trim().split('\n').pop();
         new Notice('推送失败：' + (msg || '未知错误'), 8000);
@@ -480,6 +495,20 @@ class BlogUploaderSettingTab extends PluginSettingTab {
           this.plugin.settings.blogPath = v.trim();
           await this.plugin.saveSettings();
         }));
+
+    new Setting(containerEl)
+      .setName('GitHub 访问令牌（免登录推送）')
+      .setDesc('填入与部署器相同的 GitHub PAT。留空则推送时会弹出 GitHub 登录窗口；'
+        + '填好后插件把令牌直接嵌进推送地址，不再弹窗。仅在本地存储，不会上传。')
+      .addText((text) => {
+        text.inputEl.type = 'password';
+        text.setPlaceholder('ghp_xxx 或 github_pat_xxx')
+          .setValue(this.plugin.settings.gitToken)
+          .onChange(async (v) => {
+            this.plugin.settings.gitToken = v.trim();
+            await this.plugin.saveSettings();
+          });
+      });
 
     new Setting(containerEl)
       .setName('笔记目录名')

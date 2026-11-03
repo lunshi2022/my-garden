@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS = {
   autoBuild: true,
   autoPush: true,
   previewPort: 4321,
+  gitToken: '',
 };
 
 /** 用系统浏览器打开网址（Obsidian 桌面版优先走 electron.shell） */
@@ -178,9 +179,13 @@ class BlogUploaderPlugin extends Plugin {
     }
 
     // 1. 笔记本体（同名旧版会被覆盖，即“重新上传就是更新”）
+    // 注意：Obsidian 的 TFile.path 已经是“相对笔记库根目录”的路径（如 content/foo.md），
+    // 不要再用 path.relative(vaultRoot, file.path)——那会把 file.path 当成相对“进程当前目录”
+    // 解析（Obsidian 的 CWD 是安装目录），跨盘符时直接吐出绝对路径，导致目标被拼坏。
     const contentName = this.settings.contentDir || 'content';
+    const noteRel = stripContentPrefix(file.path, contentName);
     const noteTarget = this.settings.keepStructure
-      ? path.join(contentDir, stripContentPrefix(path.relative(vaultRoot, file.path), contentName))
+      ? path.join(contentDir, noteRel)
       : path.join(contentDir, file.basename + '.' + file.extension);
 
     if (!this.copyTo(abs, noteTarget)) return;
@@ -208,7 +213,7 @@ class BlogUploaderPlugin extends Plugin {
 
       const srcAbs = path.join(vaultRoot, dest.path);
       const target = this.settings.keepStructure
-        ? path.join(contentDir, stripContentPrefix(path.relative(vaultRoot, dest.path), contentName))
+        ? path.join(contentDir, stripContentPrefix(dest.path, contentName))
         : path.join(contentDir, 'attachments', dest.name);
 
       if (this.copyTo(srcAbs, target)) attachmentCount += 1;
@@ -404,14 +409,39 @@ class BlogUploaderPlugin extends Plugin {
         return;
       }
 
-      const push = git(['push']);
+      // 确定当前分支与远程：部署器直推 URL 时未建立上游跟踪，
+      // 这里显式带 -u 推一次，之后 plain `git push` 也能用。
+      const branch = String(git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim() || 'main';
+      const remotes = String(git(['remote']).stdout || '')
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+      const remote = remotes.includes('origin') ? 'origin' : (remotes[0] || '');
+      if (!remote) {
+        new Notice('未检测到 git 远程仓库（origin），无法推送。请在该目录执行：git remote add origin <你的仓库地址>', 8000);
+        return;
+      }
+
+      // 若设置了访问令牌，把它嵌进远程 URL 直接推送，彻底绕开 Git Credential Manager
+      // 的交互弹窗（否则 GCM 会卡在「选择账户」页面）。
+      let pushArgs = ['push', '-u', remote, branch];
+      const token = String(this.settings.gitToken || '').trim();
+      if (token) {
+        const urlOut = git(['remote', 'get-url', remote]);
+        const url = String(urlOut.stdout || '').trim();
+        // 仅对 https 远程注入令牌；ssh 形式（git@github.com:...）保持原样走密钥/弹窗
+        if (/^https:\/\//i.test(url)) {
+          const authed = url.replace(/^https:\/\//i, 'https://x-access-token:' + token + '@');
+          pushArgs = ['push', '-u', authed, branch];
+        }
+      }
+
+      const push = git(pushArgs);
       if (push.status !== 0) {
         const msg = String(push.stderr || push.stdout || '').trim().split('\n').pop();
         new Notice('推送失败：' + (msg || '未知错误'), 8000);
         console.error('[blog-uploader] push failed\n' + (push.stderr || push.stdout));
         return;
       }
-      new Notice('已推送，GitHub Pages 一分钟左右后会自动更新', 5000);
+      new Notice('已推送，GitHub Actions 正在构建，几分钟后站点会自动更新', 5000);
     } catch (e) {
       new Notice('推送出错：' + (e.message || e), 6000);
       console.error('[blog-uploader] push error', e);
@@ -465,6 +495,20 @@ class BlogUploaderSettingTab extends PluginSettingTab {
           this.plugin.settings.blogPath = v.trim();
           await this.plugin.saveSettings();
         }));
+
+    new Setting(containerEl)
+      .setName('GitHub 访问令牌（免登录推送）')
+      .setDesc('填入与部署器相同的 GitHub PAT。留空则推送时会弹出 GitHub 登录窗口；'
+        + '填好后插件把令牌直接嵌进推送地址，不再弹窗。仅在本地存储，不会上传。')
+      .addText((text) => {
+        text.inputEl.type = 'password';
+        text.setPlaceholder('ghp_xxx 或 github_pat_xxx')
+          .setValue(this.plugin.settings.gitToken)
+          .onChange(async (v) => {
+            this.plugin.settings.gitToken = v.trim();
+            await this.plugin.saveSettings();
+          });
+      });
 
     new Setting(containerEl)
       .setName('笔记目录名')
